@@ -15,39 +15,76 @@ static const char *TAG = "wifi_module";
 static void wifi_event_handler(void* arg, esp_event_base_t event_base,
                                     int32_t event_id, void* event_data)
 {
-    if (event_id == WIFI_EVENT_STA_START) {
-        // The WiFi station interface has started, so we try to connect to the WiFi network.
-        reconnectWiFi();
-    } else if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        // The WiFi station interface has disconnected from the WiFi network.
-        // We set the WIFI_FAIL_BIT in the event group to indicate this.
-        xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+    // Declare the retry count as a static variable
+    static int retry_count = 0;
 
-        // You might want to try to reconnect here, depending on your use case.
-        // Be careful not to create an infinite loop of reconnection attempts, though.
-        // You could implement a maximum retry count, for example.
-        reconnectWiFi();
-    } else if (event_id == IP_EVENT_STA_GOT_IP) {
-        // The WiFi station interface has successfully connected to the WiFi network and got an IP address.
-        // We set the WIFI_CONNECTED_BIT in the event group to indicate this.
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    switch (event_id) {
+        case WIFI_EVENT_STA_START:
+            ESP_LOGI(TAG, "WiFi station interface started, trying to connect...");
+            esp_err_t err = reconnectWiFi();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to reconnect WiFi: %s", esp_err_to_name(err));
+            }
+            break;
 
-        // Save the WiFi credentials here
-        saveWiFiCredentials(&wifi_credentials);
+        case WIFI_EVENT_STA_DISCONNECTED:
+            wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*) event_data;
+            ESP_LOGI(TAG, "Disconnected from WiFi network, reason: %d", event->reason);
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
 
-        // Disable Bluetooth when WiFi is connected
-        // This is a good practice to save power if you don't need Bluetooth and WiFi at the same time.
-        // However, make sure that you don't need the Bluetooth connection anymore before disabling it.
-        disableBLE();
+            // If the retry count has reached the maximum, switch to BLE mode
+            if (++retry_count >= WIFI_CONNECT_RETRY_MAX) {
+                ESP_LOGE(TAG, "Failed to connect to WiFi after %d attempts, switching to BLE mode", retry_count);
+
+                // Deinitialize the WiFi module
+                wifi_module_deinit();
+
+                // Switch to BLE mode
+                err = setupBLE();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to setup BLE : %s", esp_err_to_name(err));
+                }
+            } else {
+                // If the retry count hasn't reached the maximum, log the error and retry the WiFi setup after a delay
+                ESP_LOGE(TAG, "Failed to connect to WiFi, retrying in 1 second...");
+                vTaskDelay(2000 / portTICK_PERIOD_MS); // Wait for 1 second
+                err = reconnectWiFi();
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to reconnect WiFi: %s", esp_err_to_name(err));
+                }
+            }
+            break;
+
+        case IP_EVENT_STA_GOT_IP:
+            ip_event_got_ip_t* event_got_ip = (ip_event_got_ip_t*) event_data;
+            ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event_got_ip->ip_info.ip));
+            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+
+            // Save the WiFi credentials here
+            saveWiFiCredentials(&wifi_credentials);
+
+            // Disable Bluetooth when WiFi is connected
+            err = disableBLE();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to disable BLE: %s", esp_err_to_name(err));
+            }
+
+            // Reset the retry count
+            retry_count = 0;
+            break;
+
+        default:
+            ESP_LOGI(TAG, "Unhandled event base: %s, event id: %lu", event_base, event_id);
+            break;
     }
 }
 
-void setupWiFi(WiFiCredentials_t* credentials) {
+esp_err_t setupWiFi(WiFiCredentials_t* credentials) {
     // Check if the credentials are valid
     // If the credentials pointer is NULL or either the ssid or password is NULL, log an error and return
     if (credentials == NULL || credentials->ssid == NULL || credentials->password == NULL) {
         ESP_LOGE(TAG, "Invalid WiFi credentials");
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
 
     // Set the WiFi credentials
@@ -67,7 +104,7 @@ void setupWiFi(WiFiCredentials_t* credentials) {
     esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set WiFi mode: %s", esp_err_to_name(err));
-        return;
+        return err;
     }
 
     // Set the WiFi configuration
@@ -75,7 +112,7 @@ void setupWiFi(WiFiCredentials_t* credentials) {
     err = esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set WiFi config: %s", esp_err_to_name(err));
-        return;
+        return err;
     }
 
     // Start the WiFi connection
@@ -83,11 +120,12 @@ void setupWiFi(WiFiCredentials_t* credentials) {
     err = esp_wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start WiFi: %s", esp_err_to_name(err));
-        return;
+        return err;
     }
 
     // If all the function calls succeeded, log a success message
     ESP_LOGI(TAG, "WiFi setup completed successfully");
+    return ESP_OK;
 }
 
 
@@ -102,7 +140,12 @@ void handleWiFi() {
         ESP_LOGI(TAG, "connected to ap SSID:%s", wifi_credentials.ssid);
     } else if (bits & WIFI_FAIL_BIT) {
         ESP_LOGI(TAG, "Failed to connect to SSID:%s", wifi_credentials.ssid);
-        setupBLE(); // Switch to BLE mode when WiFi connection fails
+        // Switch to BLE mode when WiFi connection fails
+        esp_err_t err = setupBLE();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to setup BLE : %s", esp_err_to_name(err));
+            }
+
     } else {
         ESP_LOGE(TAG, "UNEXPECTED EVENT");
     }
@@ -113,15 +156,11 @@ bool checkWiFiConnection() {
 }
 
 void setWiFiCredentials(const WiFiCredentials_t* new_credentials) {
-
     // Check if the new credentials are valid
     if (new_credentials->ssid == NULL || new_credentials->password == NULL) {
         ESP_LOGE(TAG, "Invalid WiFi credentials");
         return;
     }
-
-    // Copy the new credentials to the global variable
-    wifi_credentials = *new_credentials;
 
     // Set the WiFi credentials
     xSemaphoreTake(wifi_creds_mutex, portMAX_DELAY);
@@ -134,7 +173,6 @@ void setWiFiCredentials(const WiFiCredentials_t* new_credentials) {
         ESP_ERROR_CHECK(esp_wifi_disconnect());
     }
 
-    setupWiFi(&wifi_credentials);
 }
 
 
@@ -244,17 +282,25 @@ void saveWiFiCredentials(const WiFiCredentials_t* credentials) {
 }
 
 
-void reconnectWiFi() {
+esp_err_t reconnectWiFi() {
     // Add a delay before retrying the WiFi connection
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     // Check if the WiFi is already connecting before calling esp_wifi_connect()
     wifi_mode_t mode;
-    esp_wifi_get_mode(&mode);
+    esp_err_t err = esp_wifi_get_mode(&mode);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get WiFi mode: %s", esp_err_to_name(err));
+        return err;
+    }
+
     if (mode != WIFI_MODE_STA) {
-        esp_err_t err = esp_wifi_connect();
+        err = esp_wifi_connect();
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to connect to WiFi: %s", esp_err_to_name(err));
+            return err;
         }
     }
+
+    return ESP_OK;
 }

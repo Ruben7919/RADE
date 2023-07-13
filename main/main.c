@@ -33,8 +33,6 @@
 #endif /* CONFIG_GRI_ENABLE_SUB_PUB_UNSUB_DEMO */
 
 
-#define WIFI_CONNECT_RETRY_MAX 3
-
 /**
  * @brief The AWS RootCA1 passed in from ./certs/root_cert_auth.pem
  */
@@ -101,6 +99,14 @@ void app_main(void) {
     xTaskCreate(sensor_task, "sensor_task", 4096, NULL, 5, NULL);
     
     */
+   /*
+    esp_err_t err = nvs_flash_erase();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error (%s) erasing NVS!", esp_err_to_name(err));
+    } else {
+        ESP_LOGI(TAG, "NVS erased successfully!");
+    }
+    */
 
     vTaskDelay(2000 / portTICK_PERIOD_MS);
 
@@ -144,8 +150,14 @@ void app_main(void) {
 
 
 void ble_task(void *pvParameters) {
+
     // Initialize the BLE module
-    setupBLE();
+    ble_module_init();
+
+    esp_err_t err = setupBLE();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to setup BLE : %s", esp_err_to_name(err));
+    }
 
     // Main loop
     while (true) {
@@ -157,42 +169,19 @@ void ble_task(void *pvParameters) {
     vTaskDelete(NULL);
 }
 
-
 void wifi_task(void *pvParameters) {
-    // Retry count for WiFi connection attempts
-    int retry_count = 0;
-
     // Get the WiFi credentials from the task parameters
     WiFiCredentials_t* credentials = (WiFiCredentials_t*) pvParameters;
 
-    // If the SSID and password were read successfully, start the WiFi module
     // Initialize the WiFi module
     wifi_module_init();    
 
     // Initialize the WiFi module with the credentials
     setWiFiCredentials(credentials);
 
-    // Main loop
-    while (true) {
-        // If the WiFi connection was successful, break the loop
-        if (checkWiFiConnection()) {
-            break;
-        }
-
-        // If the WiFi connection failed, increment the retry count
-        retry_count++;
-
-        // If the retry count has reached the maximum, switch to BLE mode
-        if (retry_count >= WIFI_CONNECT_RETRY_MAX) {
-            ESP_LOGE(TAG, "Failed to connect to WiFi after %d attempts, switching to BLE mode", retry_count);
-            setupBLE();
-            break;
-        }
-
-        // If the retry count hasn't reached the maximum, log the error and retry the WiFi setup after a delay
-        ESP_LOGE(TAG, "Failed to connect to WiFi, retrying in 1 second...");
-        vTaskDelay(1000 / portTICK_PERIOD_MS); // Wait for 1 second
-        reconnectWiFi();
+    esp_err_t err = setupWiFi(credentials);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to setup WiFi : %s", esp_err_to_name(err));
     }
 
     // Main loop
@@ -210,6 +199,7 @@ void wifi_task(void *pvParameters) {
     // Delete this task when the loop is done
     vTaskDelete(NULL);
 }
+
 
 
 static BaseType_t prvInitializeNetworkContext( void )

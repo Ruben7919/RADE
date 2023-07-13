@@ -2,8 +2,8 @@
 #define WIFI_CREDENTIALS_H
 
 typedef struct {
-    char ssid[32];
-    char password[64];
+    char ssid[33];
+    char password[65];
 } WiFiCredentials_t;
 
 extern WiFiCredentials_t wifiCredentials;

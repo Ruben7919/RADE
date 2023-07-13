@@ -68,15 +68,26 @@ static void example_event_callback(esp_blufi_cb_event_t event, esp_blufi_cb_para
             ESP_LOGE(TAG, "BLUFI report error, error code %d", param->report_error.state);
             break;
         case ESP_BLUFI_EVENT_RECV_STA_SSID:
-            ESP_LOGI(TAG, "BLUFI receive wifi ssid");
+            ESP_LOGI(TAG, "Received SSID: %s, length: %d", param->sta_ssid.ssid, param->sta_ssid.ssid_len);
             bzero(&wifi_credentials, sizeof(WiFiCredentials_t));
             memcpy(wifi_credentials.ssid, param->sta_ssid.ssid, param->sta_ssid.ssid_len);
+            wifi_credentials.ssid[param->sta_ssid.ssid_len] = '\0'; 
             break;
         case ESP_BLUFI_EVENT_RECV_STA_PASSWD:
-            ESP_LOGI(TAG, "BLUFI receive wifi password");
+            ESP_LOGI(TAG, "Received password: %s, length: %d", param->sta_passwd.passwd, param->sta_passwd.passwd_len);
+           /* for (int i = 0; i < param->sta_passwd.passwd_len; i++) {
+                ESP_LOGI(TAG, "%02x ", param->sta_passwd.passwd[i]);
+            }
+            */
             memcpy(wifi_credentials.password, param->sta_passwd.passwd, param->sta_passwd.passwd_len);
+            wifi_credentials.password[param->sta_passwd.passwd_len] = '\0';  // Add null character at the end
             wifi_module_init();
             setWiFiCredentials(&wifi_credentials);
+
+            esp_err_t err = setupWiFi(&wifi_credentials);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to setup WiFi : %s", esp_err_to_name(err));
+            }
             break;
         default:
             ESP_LOGI(TAG, "BLUFI cb unknown event %d", event);
@@ -84,9 +95,8 @@ static void example_event_callback(esp_blufi_cb_event_t event, esp_blufi_cb_para
     }
 }
 
-void setupBLE() {
+void ble_module_init() {
     esp_err_t ret;
-
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     if ((ret = esp_bt_controller_init(&bt_cfg)) != ESP_OK) {
         ESP_LOGE(TAG, "%s initialize controller failed: %s\n", __func__, esp_err_to_name(ret));
@@ -114,7 +124,6 @@ void setupBLE() {
     uint8_t init_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
     uint8_t rsp_key = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
 
-
     esp_blufi_callbacks_t example_callbacks = {
         .event_cb = example_event_callback,
     };
@@ -123,18 +132,55 @@ void setupBLE() {
         ESP_LOGE(TAG, "%s register callbacks failed: %s\n", __func__, esp_err_to_name(ret));
         return;
     }
-
-    if ((ret = esp_blufi_profile_init()) != ESP_OK) {
-        ESP_LOGE(TAG, "%s initialize blufi profile failed: %s\n", __func__, esp_err_to_name(ret));
-        return;
-    }
-    // Start advertising
-    esp_ble_gap_start_advertising(&adv_params);
 }
 
-void disableBLE() {
-    esp_blufi_profile_deinit();
-    esp_bluedroid_disable();
-    esp_bluedroid_deinit();
-    esp_bt_controller_disable();
+esp_err_t setupBLE() {
+    esp_err_t ret;
+    // Initialize the BLUFI profile
+    // The BLUFI profile is a custom GATT-based profile provided by Espressif.
+    // It is used for configuring the Wi-Fi settings over BLE.
+    if ((ret = esp_blufi_profile_init()) != ESP_OK) {
+        ESP_LOGE(TAG, "%s initialize blufi profile failed: %s\n", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+    // Start advertising
+    // This makes the ESP32 discoverable to other BLE devices.
+    esp_ble_gap_start_advertising(&adv_params);
+    return ESP_OK;
+}
+
+
+esp_err_t disableBLE() {
+    esp_err_t ret;
+
+    // Deinitialize the BLUFI profile
+    ret = esp_blufi_profile_deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "%s deinitialize blufi profile failed: %s\n", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Disable the bluedroid stack
+    ret = esp_bluedroid_disable();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "%s disable bluedroid failed: %s\n", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Deinitialize the bluedroid stack
+    ret = esp_bluedroid_deinit();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "%s deinitialize bluedroid failed: %s\n", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Disable the BT controller
+    ret = esp_bt_controller_disable();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "%s disable BT controller failed: %s\n", __func__, esp_err_to_name(ret));
+        return ret;
+    }
+
+    ESP_LOGI(TAG, "BLE module disabled successfully");
+    return ESP_OK;
 }

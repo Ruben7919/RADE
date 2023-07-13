@@ -23,7 +23,9 @@
 
 #define BLUFI_DEVICE_NAME "RAD"
 
-void setupBLE();
-void disableBLE();
+esp_err_t setupBLE();
+esp_err_t disableBLE();
+
+void ble_module_init();
 
 #endif

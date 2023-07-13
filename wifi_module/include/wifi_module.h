@@ -14,8 +14,9 @@
 #include "wifi_credentials.h" // Include the new header file
 
 
+#define WIFI_CONNECT_RETRY_MAX 3
 
-void setupWiFi(WiFiCredentials_t* credentials);
+esp_err_t setupWiFi(WiFiCredentials_t* credentials);
 
 void setWiFiCredentials(const WiFiCredentials_t* new_credentials);
 
@@ -29,6 +30,6 @@ void handleWiFi();
 
 bool checkWiFiConnection();
 
-void reconnectWiFi(void);
+esp_err_t reconnectWiFi(void);
 
 #endif
